@@ -1,12 +1,23 @@
 '''
-用 git 管理一下
-
-这里做一个简单尝试，先拿 valid 的 一个 chunk 做尝试 0, 5625758
+总览一下，最核心的函数放上面了，越次要越后面
+2.5 的题目都挤在这了
 '''
 
+import multiprocessing
 import regex as re
 from collections import Counter, defaultdict
-import sys
+import os
+from typing import BinaryIO
+import psutil
+import json
+import cProfile
+import pstats
+
+
+PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+input_path = 'data/TinyStoriesV2-GPT4-valid.txt'
+vocab_size = 1000
+special_tokens = ['<|endoftext|>']
 
 def train_bpe(
     input_path: str,
@@ -14,41 +25,32 @@ def train_bpe(
     special_tokens: list[str]
 ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
     # 初始化
-    with open(input_path, "rb") as f:
-        chunk = f.read().decode('utf-8', errors='ignore')
-    
-    PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-
     vocab = {idx:bytes([idx]) for idx in range(256)}
     idx = 256
     for st in special_tokens:
         vocab[idx] = st.encode('utf-8')
         idx += 1
-
     merges = []
+
+    # 找边界，并行。只在预分词频率上并行
+    with open(input_path, "rb") as f:
+        num_processes = multiprocessing.cpu_count()
+        boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
+
+    with multiprocessing.Pool(processes=num_processes) as pool:
+        all_pre_cnt = pool.starmap(pre_tokenizer, zip(
+            [input_path]*num_processes, 
+            boundaries[:-1], boundaries[1:],
+            [special_tokens]*num_processes))
     
-    # 拆分文字
-    st_pat = '|'.join(map(re.escape, special_tokens))
-    txts = re.split(st_pat, chunk)
-    
-    # 这里 Counter most common 给的是字典序升序
-    # 预分词的频率计数
     pre_cnt = Counter()
+    for pc in all_pre_cnt:
+        pre_cnt += pc
     # 相邻的频率
     adj_cnt = Counter()
-
     # cache 通过相邻找预分词
     # 还是字典，和 Counter 一样，方便用的
     adj_pre = defaultdict(list)
-    
-    # 预分词并统计
-    for txt in txts:
-        for pre in re.finditer(PAT, txt):
-            # 这样出来的是 整型元组：
-            # pre_cnt[tuple(pre.group().encode('utf-8'))] += 1
-            # 要 tuple 包一下，不然懒惰
-            tpl = tuple(bytes([b]) for b in pre.group().encode('utf-8'))
-            pre_cnt[tpl] += 1
     
     # 在预分词中统计相邻次数，并且构造 cache
     for k, v in pre_cnt.items():
@@ -104,7 +106,119 @@ def train_bpe(
             for l, r in zip(new_k[:-1], new_k[1:]):
                 adj_pre[(l,r)].append(new_k)
 
-    
     return vocab, merges
 
-train_bpe('data/TinyStoriesV2-GPT4-valid.txt', 500, ['<|endoftext|>'])
+def pre_tokenizer(
+    input_path: str,
+    start: int,
+    end: int,
+    special_tokens: list[str]
+):
+    '''
+    用来并行的函数
+
+    Args:
+        chunk 在文件中的起点
+        chunk 在文件中的终点
+
+    Returns:
+        当前 chunk 的预分词频率
+    '''
+
+    with open(input_path, 'rb') as f:
+        f.seek(start)
+        chunk = f.read(end - start).decode('utf-8', errors='ignore')
+    
+    st_pat = '|'.join(map(re.escape, special_tokens))
+    txts = re.split(st_pat, chunk)
+
+    pre_cnt = Counter()
+    for txt in txts:
+        for pre in re.finditer(PAT, txt):
+            tpl = tuple(bytes([b]) for b in pre.group().encode('utf-8'))
+            pre_cnt[tpl] += 1
+
+    return pre_cnt
+
+
+def find_chunk_boundaries(
+    file: BinaryIO,
+    desired_num_chunks: int,
+    split_special_token: bytes,
+) -> list[int]:
+    """
+    官方的代码，没动
+
+    Chunk the file into parts that can be counted independently.
+    May return fewer chunks if the boundaries end up overlapping.
+    """
+    assert isinstance(split_special_token, bytes), "Must represent special token as a bytestring"
+
+    # Get total file size in bytes
+    file.seek(0, os.SEEK_END)
+    file_size = file.tell()
+    file.seek(0)
+
+    chunk_size = file_size // desired_num_chunks
+
+    # Initial guesses for chunk boundary locations, uniformly spaced
+    # Chunks start on previous index, don't include last index
+    chunk_boundaries = [i * chunk_size for i in range(desired_num_chunks + 1)]
+    chunk_boundaries[-1] = file_size
+
+    mini_chunk_size = 4096  # Read ahead by 4k bytes at a time
+
+    for bi in range(1, len(chunk_boundaries) - 1):
+        initial_position = chunk_boundaries[bi]
+        file.seek(initial_position)  # Start at boundary guess
+        while True:
+            mini_chunk = file.read(mini_chunk_size)  # Read a mini chunk
+
+            # If EOF, this boundary should be at the end of the file
+            if mini_chunk == b"":
+                chunk_boundaries[bi] = file_size
+                break
+
+            # Find the special token in the mini chunk
+            found_at = mini_chunk.find(split_special_token)
+            if found_at != -1:
+                chunk_boundaries[bi] = initial_position + found_at
+                break
+            initial_position += mini_chunk_size
+
+    # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
+    return sorted(set(chunk_boundaries))
+
+def get_memory_usage():
+    process = psutil.Process(os.getpid())
+    return process.memory_info().rss / (1024 ** 3)  # 单位: GB
+
+def save_tokenizer_assets(vocab, merges, vocab_path, merges_path):
+    serializable_vocab = {k: list(v) for k, v in vocab.items()}
+    with open(vocab_path, "w", encoding="utf-8") as f:
+        json.dump(serializable_vocab, f, indent=2)
+
+    # 处理 merges: [(bytes, bytes), ...] -> [[int, int], [int, int]]
+    # 也可以保存为文本文件，每行一对
+    with open(merges_path, "w", encoding="utf-8") as f:
+        for p1, p2 in merges:
+            # 将 bytes 转换为 hex 字符串，方便肉眼查看
+            f.write(f"{p1.hex()} {p2.hex()}\n")
+
+if __name__ == '__main__':
+    # 创建性能分析器
+    profiler = cProfile.Profile()
+    profiler.enable() # 开始记录
+
+    vocab, merges = train_bpe(input_path, vocab_size, special_tokens)
+
+    profiler.disable() # 停止记录
+
+    # 打印分析结果
+    print(f"内存占用: {get_memory_usage():.2f} GB")
+    stats = pstats.Stats(profiler).sort_stats('cumulative')
+    stats.print_stats(20)  # 只看前 20 名最慢的操作
+    
+    for i in sorted(vocab, reverse=True, key=lambda x: len(vocab[x]))[:5]:
+        print(vocab[i])
+    save_tokenizer_assets(vocab, merges, input_path[:-4]+'_vocab.json', input_path[:-4]+'_merges.txt')
