@@ -162,4 +162,7 @@ cython_debug/
 .ruff_cache/
 *.zip
 
+
+# 我加的
 data/
+cs336_basics/test.py
