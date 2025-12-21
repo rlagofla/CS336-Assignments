@@ -9,7 +9,7 @@ from collections import Counter, defaultdict
 import os
 from typing import BinaryIO
 import psutil
-import json
+import pickle
 import cProfile
 import pstats
 
@@ -194,16 +194,11 @@ def get_memory_usage():
     return process.memory_info().rss / (1024 ** 3)  # 单位: GB
 
 def save_tokenizer_assets(vocab, merges, vocab_path, merges_path):
-    serializable_vocab = {k: list(v) for k, v in vocab.items()}
-    with open(vocab_path, "w", encoding="utf-8") as f:
-        json.dump(serializable_vocab, f, indent=2)
+    with open(vocab_path, 'wb') as f:
+        pickle.dump(vocab, f)
+    with open(merges_path, 'wb') as f:
+        pickle.dump(merges, f)
 
-    # 处理 merges: [(bytes, bytes), ...] -> [[int, int], [int, int]]
-    # 也可以保存为文本文件，每行一对
-    with open(merges_path, "w", encoding="utf-8") as f:
-        for p1, p2 in merges:
-            # 将 bytes 转换为 hex 字符串，方便肉眼查看
-            f.write(f"{p1.hex()} {p2.hex()}\n")
 
 if __name__ == '__main__':
     # 创建性能分析器
@@ -221,4 +216,4 @@ if __name__ == '__main__':
     
     for i in sorted(vocab, reverse=True, key=lambda x: len(vocab[x]))[:5]:
         print(vocab[i])
-    save_tokenizer_assets(vocab, merges, input_path[:-4]+'_vocab.json', input_path[:-4]+'_merges.txt')
+    save_tokenizer_assets(vocab, merges, input_path[:-4]+'_vocab.pickle', input_path[:-4]+'_merges.pickle')
