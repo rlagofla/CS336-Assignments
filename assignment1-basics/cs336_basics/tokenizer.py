@@ -2,6 +2,7 @@ import pickle
 from typing import Iterable, Iterator
 import regex as re
 import heapq
+import os
 
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
@@ -26,15 +27,14 @@ class Tokenizer():
 
         self.inv_vocab = {v:k for k, v in vocab.items()}
         self.inv_merges = {merges[i]:i for i in range(len(merges))}
-
-        # 提前写好需要的 PAT
+        
+        # special_tokens 的 split 规则
+        self.st_pat = None
         if self.special_tokens:
-            st_pat = '|'.join(map(re.escape, special_tokens))
-            combined_pat = f"{st_pat}|{PAT}"
-            self.pat = re.compile(combined_pat)
-        else:
-            self.pat = PAT
-            
+            # 正则表达式有匹配顺序，优先大的匹配
+            sorted_special_tokens = sorted(self.special_tokens, key=len, reverse=True)
+            # 谁知道啊，加上这个括号就能保留分割了
+            self.st_pat = re.compile('(' + '|'.join(map(re.escape, sorted_special_tokens)) + ')')
 
     # 工厂函数
     @classmethod
@@ -48,27 +48,35 @@ class Tokenizer():
 
     def encode(self, text: str) -> list[int]:
         out = []
-        txts = re.finditer(self.pat, text)
-        for pre in txts:
-            p = pre.group()
-            if p in self.special_tokens:
-                out.append(self.inv_vocab[p.encode('utf-8')])
-                continue
+        # 一定要这么搞一下因为 '()' 会把每个字符直接隔开
+        if self.st_pat:
+            chunks = self.st_pat.split(text)
+        else:
+            chunks = [text]
 
-            lst_idx = self.merge(p)
-            out += lst_idx
+        for chunk in chunks:
+            if chunk in self.special_tokens:
+                out.append(self.inv_vocab[chunk.encode('utf-8')])
+                continue
+            for pre in re.finditer(PAT, chunk):
+                lst_idx = self.merge(pre.group())
+                out.extend(lst_idx)
         return out
 
 
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
-        pass
+        for it in iterable:
+            for idx in self.encode(it):
+                yield idx
 
 
     def decode(self, ids: list[int]) -> str:
-        out = ''
+        out = b''
+        # 不能一个数字一个数字的 decode，要最后一起 decode
         for idx in ids:
-            out += self.vocab[idx].decode('utf-8')
-        return out
+            out += self.vocab[idx]
+        # 忘记了，pdf 这里说了，希望你处理不了的地方用 replace    
+        return out.decode('utf-8', errors='replace')
 
 
     def merge(self, pre: str) -> list[int]:
@@ -139,5 +147,4 @@ class Tokenizer():
         return out
 
 if __name__ == '__main__':
-    tknzr = Tokenizer.from_files('data/TinyStoriesV2-GPT4-valid_vocab.pickle', 'data/TinyStoriesV2-GPT4-valid_merges.pickle', ['<|endoftext|>'])
-    print(tknzr.encode(''))
+    tokenizer = Tokenizer.from_files('data/TinyStoriesV2-GPT4-valid_vocab.pickle', 'data/TinyStoriesV2-GPT4-valid_merges.pickle', ['<|endoftext|>'])
