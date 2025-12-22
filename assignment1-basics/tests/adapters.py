@@ -368,6 +368,7 @@ def run_transformer_lm(
     raise NotImplementedError
 
 
+from cs336_basics.rmsnorm import RMSNorm
 def run_rmsnorm(
     d_model: int,
     eps: float,
@@ -388,7 +389,12 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+    rmsnorm = RMSNorm(d_model, eps)
+    state_dict = {
+        'g': weights
+    }
+    rmsnorm.load_state_dict(state_dict)
+    return rmsnorm(in_features)
 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
