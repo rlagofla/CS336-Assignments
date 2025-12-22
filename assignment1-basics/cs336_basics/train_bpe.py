@@ -1,6 +1,28 @@
 '''
 总览一下，最核心的函数放上面了，越次要越后面
 2.5 的题目都挤在这了
+
+owt 跑了 10h 我去，看了一下主要是后面的合并花太久了，具体是 max 那一步
+可以用大顶堆优化。由于堆的实现和一般字典之间的差异，两者要打配合：
+
+功能              , 字典 (adj_cnt)  , 堆 (max_heap)
+查询特定元素的当前值 , O(1) (极其快)   , O(N) (需要遍历整个树)
+修改特定元素的值    , O(1)           , O(N) (找元素) + O(logN) (调整)
+获取当前全局最大值  , O(N) (需全表扫描), O(1) (直接看堆顶)
+插入新值          , O(1)           , O(logN) (调整) 
+
+找最大值原先的 max 方案不行，但是堆快；但找到最大值之后要合并更新，更新字典快，堆慢。所以二者打配合
+为了保证堆和字典之间的数据一致，可以用 lazy 删(O(1)) 和 插入新值来权衡
+
+所以具体大顶堆的优化思路是：
+1. 额外准备一个堆
+2. 初始化堆
+3. 每次用堆取出最大的都判断一下是不是和字典里的一致
+4. 后面更新字典的时候一起更新
+    - 插入新的，堆要插入
+    - 已有的增加或减少，堆也选择插入（前面的判断一致就是 lazy 删）
+
+最后，有关 bpe 的稳定，频率一致时，需要字典序高的，但是堆默认是降的，所以得自定义
 '''
 
 import multiprocessing
@@ -12,6 +34,7 @@ import psutil
 import pickle
 import cProfile
 import pstats
+import heapq
 
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
@@ -59,9 +82,18 @@ def train_bpe(
             adj_cnt[(l,r)] += v
             adj_pre[(l,r)].append(k)
 
+    # 新建堆，初始化堆
+    max_heap = []
+    for k, v in adj_cnt.items():
+        heapq.heappush(max_heap, PairWrapper((v, k)))
+
     while len(vocab) < vocab_size:
-        # 不用 most common，一个是默认字典升序，一个是不知道平局有多少个
-        the_pair = max(adj_cnt.keys(), key=lambda p: (adj_cnt[p], p))
+        while True:  # 这边就是判断 lazy 删
+            wrapped_pair = heapq.heappop(max_heap)
+            cnt, the_pair = wrapped_pair.get()
+            if cnt == adj_cnt[the_pair]:
+                break
+        
         # 字节 + 字节 = 字节拼接
         merged_pair = the_pair[0] + the_pair[1]
         # print(merged_pair)
@@ -71,7 +103,12 @@ def train_bpe(
         
         # 根据 cache adj_pre 更新频率
         # 清掉
+        def update_adj_cnt_and_heap(pair, delta):
+            adj_cnt[pair] += delta
+            heapq.heappush(max_heap, PairWrapper((adj_cnt[pair], pair)))
         adj_cnt[the_pair] = 0
+        # 都说堆和字典要同步，这里不用是因为，这里字典也是 lazy 删
+        # 堆的 lazy 删靠的是不一致，那一边修改确实不一致
         for k in adj_pre[the_pair]:
             '''
             注意这里用到了 pre cnt，所以之后的更新仍然需要 pre cnt
@@ -91,11 +128,11 @@ def train_bpe(
                 # 相等
                 new_k.append(merged_pair)
                 if i != 0:
-                    adj_cnt[(k[i-1], merged_pair)] += v
-                    adj_cnt[(k[i-1], the_pair[0])] -= v
+                    update_adj_cnt_and_heap((k[i-1], merged_pair), v)
+                    update_adj_cnt_and_heap((k[i-1], the_pair[0]), -v)
                 if i != len(k)-2:
-                    adj_cnt[(merged_pair, k[i+2])] += v
-                    adj_cnt[(the_pair[1], k[i+2])] -= v
+                    update_adj_cnt_and_heap((merged_pair, k[i+2]), v)
+                    update_adj_cnt_and_heap((the_pair[1], k[i+2]), -v)
                 i += 2
             new_k = tuple(new_k)
             pre_cnt[k] = 0  # Lazy 删一下
@@ -140,6 +177,23 @@ def pre_tokenizer(
 
     return pre_cnt
 
+
+class PairWrapper:
+    def __init__(self, pair):
+        self.pair = pair
+        
+    def __lt__(self, other):
+        return self.pair > other.pair
+    
+    def __eq__(self, other):
+        return self.pair == other.pair
+        
+    def __repr__(self):
+        return str(self.pair)
+    
+    def get(self):
+        return self.pair
+    
 
 def find_chunk_boundaries(
     file: BinaryIO,
@@ -216,4 +270,4 @@ if __name__ == '__main__':
     
     for i in sorted(vocab, reverse=True, key=lambda x: len(vocab[x]))[:5]:
         print(vocab[i])
-    save_tokenizer_assets(vocab, merges, input_path[:-4]+'_vocab.pickle', input_path[:-4]+'_merges.pickle')
+    save_tokenizer_assets(vocab, merges, input_path[:-4]+'_vocab.picklem', input_path[:-4]+'_merges.picklem')
