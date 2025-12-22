@@ -37,6 +37,7 @@ def run_linear(
     return linear(in_features)
 
 
+from cs336_basics.embedding import Embedding
 def run_embedding(
     vocab_size: int,
     d_model: int,
@@ -55,8 +56,12 @@ def run_embedding(
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
-
-    raise NotImplementedError
+    embd = Embedding(vocab_size, d_model)
+    state_dict = {
+        'embdM': weights
+    }
+    embd.load_state_dict(state_dict)
+    return embd(token_ids)
 
 
 def run_swiglu(
