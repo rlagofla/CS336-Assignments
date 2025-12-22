@@ -8,6 +8,8 @@ class RMSNorm(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.g = nn.Parameter(torch.empty((d_model,), device=device, dtype=dtype))
+        std = (2 / d_model) ** 0.5
+        nn.init.trunc_normal_(self.g, std=std, a=-3*std, b=3*std)
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

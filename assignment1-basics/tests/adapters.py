@@ -64,6 +64,7 @@ def run_embedding(
     return embd(token_ids)
 
 
+from cs336_basics.positionwise_feedforward import SwiGLU
 def run_swiglu(
     d_model: int,
     d_ff: int,
@@ -93,7 +94,11 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+    swiglu = SwiGLU(d_model, d_ff)
+    swiglu.W1.W.data = w1_weight
+    swiglu.W2.W.data = w2_weight
+    swiglu.W3.W.data = w3_weight
+    return swiglu(in_features)
 
 
 def run_scaled_dot_product_attention(
