@@ -123,6 +123,7 @@ def run_scaled_dot_product_attention(
     return scaled_dot_product_attention(Q, K, V, mask)
 
 
+from cs336_basics.multihead_self_attention import MultiHeadSelfAttention
 def run_multihead_self_attention(
     d_model: int,
     num_heads: int,
@@ -154,7 +155,12 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    mhsa = MultiHeadSelfAttention(d_model, num_heads, in_features.size(-2))
+    mhsa.Q.W.data = q_proj_weight
+    mhsa.K.W.data = k_proj_weight
+    mhsa.V.W.data = v_proj_weight
+    mhsa.O.W.data = o_proj_weight
+    return mhsa(in_features)
 
 
 def run_multihead_self_attention_with_rope(
@@ -194,7 +200,12 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    mhsa = MultiHeadSelfAttention(d_model, num_heads, max_seq_len, theta)
+    mhsa.Q.W.data = q_proj_weight
+    mhsa.K.W.data = k_proj_weight
+    mhsa.V.W.data = v_proj_weight
+    mhsa.O.W.data = o_proj_weight
+    return mhsa(in_features, token_positions)
 
 
 from cs336_basics.rope import RoPE

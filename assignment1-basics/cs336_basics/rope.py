@@ -21,8 +21,13 @@ class RoPE(nn.Module):
         self.register_buffer('sin', rotate_angle.sin())
 
 
+    # 没有用到 token_positions，测试用例这么简单吗
+    # token_positions 的作用是，推理阶段或者 KV cache 的时候，x 不一定是完整的，有可能是中途开始的
+    # 这个 token_positions 就是标记 x 的位置的
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
-        return self.cos * x + self.sin * self.rotate_half(x)
+        cos = self.cos[token_positions]
+        sin = self.sin[token_positions]
+        return cos * x + sin * self.rotate_half(x)
 
     def rotate_half(self, x):
         x0 = x[..., 0::2]
