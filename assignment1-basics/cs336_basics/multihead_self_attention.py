@@ -10,10 +10,8 @@ class MultiHeadSelfAttention(nn.Module):
         super().__init__()
         self.num_heads = num_heads
         # 多头合并
-        self.Q = Linear(d_model, d_model)
-        self.K = Linear(d_model, d_model)
-        self.V = Linear(d_model, d_model)
-        self.O = Linear(d_model, d_model)
+        self.QKV = Linear(d_model, 3 * d_model, device=device)
+        self.O = Linear(d_model, d_model, device=device)
 
         self.rope = None
         if theta:
@@ -24,12 +22,16 @@ class MultiHeadSelfAttention(nn.Module):
 
     def forward(self, x, token_positions=None):
         T = x.shape[-2]
-        q, k, v = self.Q(x), self.K(x), self.V(x)
 
         # t 是序列，h 是头数，d 是头内运算的特征数
-        q = rearrange(q, '... t (h d) -> ... h t d', h=self.num_heads)
-        k = rearrange(k, '... t (h d) -> ... h t d', h=self.num_heads)
-        v = rearrange(v, '... t (h d) -> ... h t d', h=self.num_heads)
+        # 这个牛逼啊，首先 rearrange 还是老样子，这个解包是 tensor 本来就能根据 dim0 做解包
+        # 所以拆分矩阵乱七八糟的一套解决
+        q, k, v = rearrange(
+            self.QKV(x),
+            '... t (qkv h d) -> qkv ... h t d',
+            h=self.num_heads,
+            qkv=3
+        )
         
         if self.rope is not None:
             q = self.rope(q, token_positions)

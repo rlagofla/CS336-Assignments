@@ -156,9 +156,8 @@ def run_multihead_self_attention(
         implementation with the given QKV projection weights and input features.
     """
     mhsa = MultiHeadSelfAttention(d_model, num_heads, in_features.size(-2))
-    mhsa.Q.W.data = q_proj_weight
-    mhsa.K.W.data = k_proj_weight
-    mhsa.V.W.data = v_proj_weight
+    qkv_proj_weight = torch.concat([q_proj_weight, k_proj_weight, v_proj_weight])
+    mhsa.QKV.W.data = qkv_proj_weight
     mhsa.O.W.data = o_proj_weight
     return mhsa(in_features)
 
@@ -201,9 +200,9 @@ def run_multihead_self_attention_with_rope(
         implementation with the given QKV projection weights and input features.
     """
     mhsa = MultiHeadSelfAttention(d_model, num_heads, max_seq_len, theta)
-    mhsa.Q.W.data = q_proj_weight
-    mhsa.K.W.data = k_proj_weight
-    mhsa.V.W.data = v_proj_weight
+    qkv_proj_weight = torch.concat([q_proj_weight, k_proj_weight, v_proj_weight])
+    mhsa.QKV.W.data = qkv_proj_weight
+    mhsa.O.W.data = o_proj_weight
     mhsa.O.W.data = o_proj_weight
     return mhsa(in_features, token_positions)
 
