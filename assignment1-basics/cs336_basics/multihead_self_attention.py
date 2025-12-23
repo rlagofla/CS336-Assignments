@@ -18,7 +18,7 @@ class MultiHeadSelfAttention(nn.Module):
             self.rope = RoPE(theta, d_model // num_heads, max_seq, device=device)
 
         # pdf 和实现就是转置来转置去，好讨厌
-        self.register_buffer('mask', torch.tril(torch.ones((max_seq, max_seq))).to(bool))
+        self.register_buffer('mask', torch.tril(torch.ones((max_seq, max_seq))).to(bool), persistent=False)
 
     def forward(self, x, token_positions=None):
         T = x.shape[-2]

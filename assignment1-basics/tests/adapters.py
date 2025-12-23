@@ -231,6 +231,7 @@ def run_rope(
     return rope(in_query_or_key, token_positions)
 
 
+from cs336_basics.transformer_block import TransformerBlock
 def run_transformer_block(
     d_model: int,
     num_heads: int,
@@ -301,7 +302,18 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    block = TransformerBlock(d_model, num_heads, max_seq_len, theta, d_ff)
+    the_w = {
+        'ln1.g': weights['ln1.weight'],
+        'ln2.g': weights['ln2.weight'],
+        'ffn.W1.W': weights['ffn.w1.weight'],
+        'ffn.W2.W': weights['ffn.w2.weight'],
+        'ffn.W3.W': weights['ffn.w3.weight'],
+        'attn.QKV.W': torch.concat([weights['attn.q_proj.weight'], weights['attn.k_proj.weight'], weights['attn.v_proj.weight']]),
+        'attn.O.W': weights['attn.output_proj.weight']
+    }
+    block.load_state_dict(the_w)
+    return block(in_features)
 
 
 def run_transformer_lm(
