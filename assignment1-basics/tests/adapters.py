@@ -10,7 +10,7 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 
-from cs336_basics.linear import Linear
+from cs336_basics.ch3.linear import Linear
 def run_linear(
     d_in: int,
     d_out: int,
@@ -37,7 +37,7 @@ def run_linear(
     return linear(in_features)
 
 
-from cs336_basics.embedding import Embedding
+from cs336_basics.ch3.embedding import Embedding
 def run_embedding(
     vocab_size: int,
     d_model: int,
@@ -64,7 +64,7 @@ def run_embedding(
     return embd(token_ids)
 
 
-from cs336_basics.positionwise_feedforward import SwiGLU
+from cs336_basics.ch3.positionwise_feedforward import SwiGLU
 def run_swiglu(
     d_model: int,
     d_ff: int,
@@ -101,7 +101,7 @@ def run_swiglu(
     return swiglu(in_features)
 
 
-from cs336_basics.scaled_dot_product_attention import scaled_dot_product_attention
+from cs336_basics.ch3.scaled_dot_product_attention import scaled_dot_product_attention
 def run_scaled_dot_product_attention(
     Q: Float[Tensor, " ... queries d_k"],
     K: Float[Tensor, " ... keys d_k"],
@@ -123,7 +123,7 @@ def run_scaled_dot_product_attention(
     return scaled_dot_product_attention(Q, K, V, mask)
 
 
-from cs336_basics.multihead_self_attention import MultiHeadSelfAttention
+from cs336_basics.ch3.multihead_self_attention import MultiHeadSelfAttention
 def run_multihead_self_attention(
     d_model: int,
     num_heads: int,
@@ -207,7 +207,7 @@ def run_multihead_self_attention_with_rope(
     return mhsa(in_features, token_positions)
 
 
-from cs336_basics.rope import RoPE
+from cs336_basics.ch3.rope import RoPE
 def run_rope(
     d_k: int,
     theta: float,
@@ -231,7 +231,7 @@ def run_rope(
     return rope(in_query_or_key, token_positions)
 
 
-from cs336_basics.transformer_block import TransformerBlock
+from cs336_basics.ch3.transformer_block import TransformerBlock
 def run_transformer_block(
     d_model: int,
     num_heads: int,
@@ -316,7 +316,7 @@ def run_transformer_block(
     return block(in_features)
 
 
-from cs336_basics.transformer_lm import TransformerLM
+from cs336_basics.ch3.transformer_lm import TransformerLM
 def run_transformer_lm(
     vocab_size: int,
     context_length: int,
@@ -413,7 +413,7 @@ def run_transformer_lm(
     return lm(in_indices)
 
 
-from cs336_basics.rmsnorm import RMSNorm
+from cs336_basics.ch3.rmsnorm import RMSNorm
 def run_rmsnorm(
     d_model: int,
     eps: float,
@@ -479,7 +479,7 @@ def run_get_batch(
     raise NotImplementedError
 
 
-from cs336_basics.softmax import softmax
+from cs336_basics.ch3.softmax import softmax
 def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:
     """
     Given a tensor of inputs, return the output of softmaxing the given `dim`
@@ -496,7 +496,7 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
     return softmax(in_features, dim)
 
 
-from cs336_basics.cross_entropy import cross_entropy
+from cs336_basics.ch4.cross_entropy import cross_entropy
 def run_cross_entropy(
     inputs: Float[Tensor, " batch_size vocab_size"], targets: Int[Tensor, " batch_size"]
 ) -> Float[Tensor, ""]:
@@ -527,7 +527,7 @@ def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm:
     raise NotImplementedError
 
 
-from cs336_basics.adamw import AdamW
+from cs336_basics.ch4.adamw import AdamW
 def get_adamw_cls() -> Any:
     """
     Returns a torch.optim.Optimizer that implements AdamW.
@@ -603,7 +603,7 @@ def run_load_checkpoint(
     raise NotImplementedError
 
 
-from cs336_basics.tokenizer import Tokenizer
+from cs336_basics.ch2.tokenizer import Tokenizer
 def get_tokenizer(
     vocab: dict[int, bytes],
     merges: list[tuple[bytes, bytes]],
@@ -627,7 +627,7 @@ def get_tokenizer(
     return Tokenizer(vocab, merges, special_tokens)
 
 
-from cs336_basics.train_bpe import train_bpe
+from cs336_basics.ch2.train_bpe import train_bpe
 def run_train_bpe(
     input_path: str | os.PathLike,
     vocab_size: int,
