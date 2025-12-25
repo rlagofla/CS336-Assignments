@@ -8,13 +8,13 @@ from .linear import Linear
 class TransformerLM(nn.Module):
     def __init__(
         self, vocab_size, d_model, context_length, num_layers, 
-        num_heads, theta, d_ff
+        num_heads, theta, d_ff, device=None
     ):
         super().__init__()
-        self.embd = Embedding(vocab_size, d_model)
-        self.layers = nn.Sequential(*[TransformerBlock(d_model, num_heads, context_length, theta, d_ff) for i in range(num_layers)])
-        self.ln = RMSNorm(d_model)
-        self.lm_head = Linear(d_model, vocab_size)
+        self.embd = Embedding(vocab_size, d_model, device=device)
+        self.layers = nn.Sequential(*[TransformerBlock(d_model, num_heads, context_length, theta, d_ff, device=device) for _ in range(num_layers)])
+        self.ln = RMSNorm(d_model, device=device)
+        self.lm_head = Linear(d_model, vocab_size, device=device)
 
     def forward(self, x):
         x_embd = self.embd(x)

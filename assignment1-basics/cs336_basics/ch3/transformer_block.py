@@ -10,7 +10,7 @@ class TransformerBlock(nn.Module):
         self.ln1 = RMSNorm(d_model, device=device)
         self.attn = MultiHeadSelfAttention(d_model, num_heads, max_seq, theta, device=device)
         self.ln2 = RMSNorm(d_model, device=device)
-        self.ffn = SwiGLU(d_model, d_ff, device)
+        self.ffn = SwiGLU(d_model, d_ff, device=device)
 
     def forward(self, x):
         pre_half = x + self.attn(self.ln1(x))
