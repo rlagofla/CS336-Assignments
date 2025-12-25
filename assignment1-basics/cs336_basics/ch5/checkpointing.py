@@ -3,11 +3,6 @@ import os
 from typing import BinaryIO, IO
 import pickle
 
-def save_tokenizer_assets(vocab, merges, vocab_path, merges_path):
-    with open(vocab_path, 'wb') as f:
-        pickle.dump(vocab, f)
-    with open(merges_path, 'wb') as f:
-        pickle.dump(merges, f)
 
 def save_checkpoint(
     model: torch.nn.Module,
