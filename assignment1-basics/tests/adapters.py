@@ -456,7 +456,7 @@ def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
     raise NotImplementedError
 
 
-from cs336_basics.ch4.data_loading import get_batch
+from cs336_basics.ch5.data_loading import get_batch
 def run_get_batch(
     dataset: npt.NDArray, batch_size: int, context_length: int, device: str
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -566,7 +566,7 @@ def run_get_lr_cosine_schedule(
     return lr_cosine_schedule(it, max_learning_rate, min_learning_rate, warmup_iters, cosine_cycle_iters)
 
 
-from cs336_basics.ch4.checkpointing import save_checkpoint, load_checkpoint
+from cs336_basics.ch5.checkpointing import save_checkpoint, load_checkpoint
 def run_save_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
