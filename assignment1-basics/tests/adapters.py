@@ -453,7 +453,7 @@ def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
         Float[Tensor,"..."]: of with the same shape as `in_features` with the output of applying
         SiLU to each element.
     """
-    raise NotImplementedError
+    return SwiGLU(1, 1).silu(in_features)
 
 
 from cs336_basics.ch5.data_loading import get_batch
