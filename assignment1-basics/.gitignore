@@ -166,3 +166,5 @@ cython_debug/
 # 我加的
 data/
 cs336_basics/test.py
+out/
+wandb/

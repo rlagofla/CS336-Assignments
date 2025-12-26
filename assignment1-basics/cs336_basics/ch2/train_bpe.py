@@ -38,8 +38,8 @@ import heapq
 
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-input_path = 'data/TinyStoriesV2-GPT4-valid.txt'
-vocab_size = 1000
+input_path = 'data/TinyStories.txt'
+vocab_size = 1024
 special_tokens = ['<|endoftext|>']
 
 def train_bpe(
@@ -270,4 +270,4 @@ if __name__ == '__main__':
     
     for i in sorted(vocab, reverse=True, key=lambda x: len(vocab[x]))[:5]:
         print(vocab[i])
-    save_tokenizer_assets(vocab, merges, input_path[:-4]+'_vocab.picklem', input_path[:-4]+'_merges.picklem')
+    save_tokenizer_assets(vocab, merges, input_path[:-4]+'_vocab.pickle', input_path[:-4]+'_merges.pickle')
