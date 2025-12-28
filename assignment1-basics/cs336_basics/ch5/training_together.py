@@ -14,18 +14,8 @@ from .checkpointing import save_checkpoint, load_checkpoint
 from ..ch4.learning_rate_schedule import lr_cosine_schedule
 from ..ch4.gradient_clipping import gradient_clipping
 
-'''
-# 基本运行
-python train.py --data_dir ./data/tinystories --n_layer 6 --d_model 384
 
-# 如果发现过拟合，想调小模型并换个学习率
-python train.py --n_layer 4 --lr 3e-4 --data_dir ./data/tinystories
-
-# 如果训练中断了，从第 2000 步恢复
-python train.py --resume out/ckpt_step_2000.pt
-'''
-
-def main(args, device, run):
+def main(args, device, run, uid):
     os.makedirs(args.out_dir, exist_ok=True)
     
     # A. 加载数据 (uint16 memmap)
@@ -63,10 +53,7 @@ def main(args, device, run):
             train_loss_est = estimate_loss(model, train_data, args.batch_size, args.context_length, 50, device)
             
             # 记录到 W&B (如果你用了的话)
-            run.log({"train_loss": train_loss_est, "val_loss": val_loss, "lr": lr})
-            pbar.set_description(f"Step {step:4d}") # 左侧显示：Epoch 1
-            pbar.set_postfix({"loss": f"{train_loss_est:.4f}", "val_loss": f"{val_loss:.4f}", "lr": f"{lr:.2e}"}) # 右侧显示：loss: 0.5000, lr: 0.0001
-
+            run.log({"eval/train_loss": train_loss_est, "eval/val_loss": val_loss}, step=step)
             # if val_loss < best_val_loss:
             #     best_val_loss = val_loss
             #     ckpt_path = os.path.join(args.out_dir, 'best_model.pt')
@@ -74,7 +61,7 @@ def main(args, device, run):
 
         # 3. 定期全量保存 (防止断电)
         if step % args.save_interval == 0:
-            ckpt_path = os.path.join(args.out_dir, f'{args.dataset}_step_{step}.pt')
+            ckpt_path = os.path.join(args.out_dir, f'{args.dataset}_{uid}_step{step}.pt')
             save_checkpoint(model, optimizer, step, ckpt_path)
 
         # 4. 执行一步训练
@@ -82,14 +69,17 @@ def main(args, device, run):
         
         optimizer.zero_grad(set_to_none=True) # 性能优化：set_to_none 比 zero_ 更快
         logits = model(x)
-        # 使用自定义或官方 CrossEntropy
         loss = cross_entropy(logits, y)
         loss.backward()
 
         # 5. 梯度裁剪 (在 Optimizer Step 之前！)
         if args.max_l2_norm != 0.0: gradient_clipping(model.parameters(), args.max_l2_norm)
+            
+        if step % args.log_interval == 0:
+            run.log({"train/loss": loss.item(), "train/lr": lr}, step=step)
 
         optimizer.step()
+
 
 # --- 2. 验证集评估逻辑 ---
 @torch.no_grad()
@@ -106,6 +96,7 @@ def estimate_loss(model, data, batch_size, context_length, eval_iters, device):
         losses[k] = loss.item()
     model.train()
     return losses.mean().item()
+                
 
 # --- 3. 命令行参数解析 ---
 def parse_args():
@@ -115,17 +106,18 @@ def parse_args():
     parser.add_argument("--out_dir", type=str, default="out/", help="保存 checkpoint 的目录")
     parser.add_argument("--dataset", type=str, default="TinyStories", help="要训练的数据集")
     # 模型超参 (与你的 GPT 类定义对应)
-    parser.add_argument("--vocab_size", type=int, default=1024)
-    parser.add_argument("--d_model", type=int, default=128)
-    parser.add_argument("--context_length", type=int, default=64)
+    parser.add_argument("--vocab_size", type=int, default=10000)
+    parser.add_argument("--d_model", type=int, default=512)
+    parser.add_argument("--context_length", type=int, default=256)
     parser.add_argument("--num_layers", type=int, default=4)
-    parser.add_argument("--num_heads", type=int, default=4)
+    parser.add_argument("--num_heads", type=int, default=16)
     parser.add_argument("--theta", type=float, default=10000.0)
-    parser.add_argument("--d_ff", type=int, default=384)
+    parser.add_argument("--d_ff", type=int, default=1344)
     # 训练超参
-    parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--max_iters", type=int, default=1000)
-    parser.add_argument("--eval_interval", type=int, default=50)
+    parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument("--max_iters", type=int, default=100)
+    parser.add_argument("--log_interval", type=int, default=5)
+    parser.add_argument("--eval_interval", type=int, default=125)
     parser.add_argument("--save_interval", type=int, default=500)
     ## Optimizer
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -134,10 +126,10 @@ def parse_args():
     parser.add_argument("--beta2", type=float, default=0.95)
     parser.add_argument("--eps", type=float, default=1e-8)
     ## lr schedule
-    parser.add_argument("--max_learning_rate", type=float, default=1e-3)
-    parser.add_argument("--min_learning_rate", type=float, default=1e-4)
+    parser.add_argument("--max_learning_rate", type=float, default=1e-2)
+    parser.add_argument("--min_learning_rate", type=float, default=1e-5)
     parser.add_argument("--warmup_iters", type=int, default=100)
-    parser.add_argument("--cosine_cycle_iters", type=int, default=1000)
+    parser.add_argument("--cosine_cycle_iters", type=int, default=2500)
     ## gradient clipping
     parser.add_argument("--max_l2_norm", type=float, default=1.0)
     # 断点续传
@@ -153,14 +145,15 @@ if __name__ == "__main__":
     for key in ignore_keys:
         config_dict.pop(key, None)
 
+    uid = time.strftime('%m%d%H%M')
     params = dict(
         entity="rla-study",
         project="CS336",
         group="basics",
         job_type="training",
-        name=f"{args.dataset}_{time.strftime('%m%d%H%M')}",
+        name=f"{args.dataset}_{uid}",
         config=config_dict
     )
     device = 'cuda' if torch.cuda.is_available() else 'mps'
     with wandb.init(**params) as run:
-        main(args, device, run)
+        main(args, device, run, uid)
