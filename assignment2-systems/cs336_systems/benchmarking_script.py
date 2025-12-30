@@ -1,9 +1,6 @@
 import argparse
 import time
-import timeit
 import torch
-import numpy as np
-import pandas as pd
 from tqdm import tqdm
 
 from cs336_basics.ch3.transformer_lm import TransformerLM
@@ -12,6 +9,7 @@ from cs336_basics.ch4.adamw import AdamW
 
 
 def main(args, device, uid):
+    dtype = torch.float16
     x = torch.randint(0, args.vocab_size, (args.batch_size, args.context_length), device=device)
 
     model_args = dict(vocab_size=args.vocab_size, d_model=args.d_model, context_length=args.context_length, num_layers=args.num_layers, num_heads=args.num_heads, theta=args.theta, d_ff=args.d_ff, device=device)
@@ -31,28 +29,20 @@ def main(args, device, uid):
 
     
     print(f"Benchmarking {args.max_iters} steps on {device}...")
-    fwd_times = []
-    bwd_times = []
+    torch.cuda.memory._record_memory_history(max_entries=1000000)
     for _ in tqdm(range(1, 1+args.max_iters)):
-        optimizer.zero_grad(set_to_none=True) # 性能优化：set_to_none 比 zero_ 更快
-
-        start_time = timeit.default_timer()
-        logits = model(x)
-        if torch.cuda.is_available(): torch.cuda.synchronize()
-        fwd_times.append(timeit.default_timer() - start_time)
-
-        loss = cross_entropy(logits, x)
-        start_time = timeit.default_timer()
-        loss.backward()
-        if torch.cuda.is_available(): torch.cuda.synchronize()
-
-        bwd_times.append(timeit.default_timer() - start_time)
-
-        optimizer.step()
-
-    timetable = pd.DataFrame({"fwd": fwd_times, "bwd": bwd_times})
-    timetable['total'] = timetable['fwd'] + timetable['bwd']
-    print(timetable.describe())
+        with torch.cuda.nvtx.range('forward'):
+            with torch.autocast(device="cuda", dtype=dtype):
+                logits = model(x)
+            loss = cross_entropy(logits, x)
+        with torch.cuda.nvtx.range('backward'):
+            optimizer.zero_grad(set_to_none=True) # 性能优化：set_to_none 比 zero_ 更快
+            loss.backward()
+        with torch.cuda.nvtx.range('optimize'):
+            optimizer.step()
+        # torch.cuda.synchronize()
+    torch.cuda.memory._dump_snapshot("out/memory_snapshot.pickle")
+    torch.cuda.memory._record_memory_history(enabled=None)
     
 
 # --- 3. 命令行参数解析 ---
