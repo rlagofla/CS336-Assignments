@@ -80,7 +80,7 @@ def flash_fwd_kernel(
     stride_lb, stride_lq,
     N_QUERIES, N_KEYS, 
     scale, 
-    is_causal,
+    is_causal: tl.constexpr,
     D: tl.constexpr, 
     Q_TILE_SIZE: tl.constexpr, 
     K_TILE_SIZE: tl.constexpr, 
@@ -154,8 +154,14 @@ def flash_fwd_kernel(
     l_i = tl.zeros((Q_TILE_SIZE,), dtype=tl.float32)
     o_i = tl.zeros((Q_TILE_SIZE, D), dtype=tl.float32)
     
+    loop_end = tl.cdiv(N_KEYS, K_TILE_SIZE)
+    if is_causal:
+        # 算 key 超过 query 的那部分，直接不循环了，对应逻辑里的 break
+        tmp = tl.cdiv((query_tile_index + 1) * Q_TILE_SIZE, K_TILE_SIZE)
+        loop_end = tl.minimum(loop_end, tmp)
+    
     q_i = tl.load(Q_block_ptr, boundary_check=(0, 1))
-    for i in range(tl.cdiv(N_KEYS, K_TILE_SIZE)):
+    for i in range(loop_end):
         k_j = tl.load(K_block_ptr, boundary_check=(0, 1))
         v_j = tl.load(V_block_ptr, boundary_check=(0, 1))
         
@@ -165,7 +171,7 @@ def flash_fwd_kernel(
         s_ij = tl.dot(q_i, k_j.trans()) * scale
         
         # 算完部分分，找最大值之前，做 mask
-        if is_causal:
+        if is_causal and (i == loop_end - 1):
             causal_mask = offs_m[:, None] >= offs_n[None, :]
             # 注意 where 和 mask_fill 不一样
             # where 是 True 的地方 s_ij；False 的地方 -inf
