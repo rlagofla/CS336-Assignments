@@ -80,6 +80,7 @@ def flash_fwd_kernel(
     stride_lb, stride_lq,
     N_QUERIES, N_KEYS, 
     scale, 
+    is_causal,
     D: tl.constexpr, 
     Q_TILE_SIZE: tl.constexpr, 
     K_TILE_SIZE: tl.constexpr, 
@@ -144,6 +145,8 @@ def flash_fwd_kernel(
         block_shape=(Q_TILE_SIZE,), 
         order=(0,), 
     )
+    # 行由 query 确定
+    offs_m = query_tile_index * Q_TILE_SIZE + tl.arange(0, Q_TILE_SIZE)
     
     m_i = tl.full((Q_TILE_SIZE,), float("-inf"), dtype=tl.float32)
     # m_i = tl.arange(0, Q_TILE_SIZE)
@@ -156,7 +159,17 @@ def flash_fwd_kernel(
         k_j = tl.load(K_block_ptr, boundary_check=(0, 1))
         v_j = tl.load(V_block_ptr, boundary_check=(0, 1))
         
+        # 列由 key 决定
+        offs_n = i * K_TILE_SIZE + tl.arange(0, K_TILE_SIZE)
+        
         s_ij = tl.dot(q_i, k_j.trans()) * scale
+        
+        # 算完部分分，找最大值之前，做 mask
+        if is_causal:
+            causal_mask = offs_m[:, None] >= offs_n[None, :]
+            # 注意 where 和 mask_fill 不一样
+            # where 是 True 的地方 s_ij；False 的地方 -inf
+            s_ij = tl.where(causal_mask, s_ij, float("-inf"))
         
         m_ij = tl.max(s_ij, 1)
         # tl.device_print("mij value: ", m_ij)
@@ -200,6 +213,7 @@ class FlashAttention2Triton(torch.autograd.Function):
             L.stride(0), L.stride(1), 
             T, T,
             D ** -0.5,
+            is_causal,
             D=D, Q_TILE_SIZE=BQ, K_TILE_SIZE=BK
         )
         ctx.save_for_backward(Q, K, V, O, L)
