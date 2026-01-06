@@ -66,8 +66,22 @@ class FlashAttention2PyTorch(torch.autograd.Function):
         return O
 
     @staticmethod
-    def backward(ctx, grad_output):
-        raise NotImplementedError
+    def backward(ctx, dO):
+        # 虽然这里都是 dX，但是不是微分，而默认是 dL/dX
+        Q, K, V, O, L = ctx.saved_tensors
+        B, T, C = Q.shape
+        D = torch.sum(O * dO, dim=-1, keepdim=True)
+        scale = C ** -0.5
+
+        S = Q @ K.transpose(-2, -1) * scale
+        P = torch.exp(S - L.unsqueeze(-1))
+        dV = P.transpose(-2, -1) @ dO
+        dP = dO @ V.transpose(-2, -1)
+        dS = P * (dP - D)
+        dQ = dS @ K * scale
+        dK = dS.transpose(-2, -1) @ Q * scale
+
+        return dQ, dK, dV, None
     
 @triton.jit 
 def flash_fwd_kernel(
