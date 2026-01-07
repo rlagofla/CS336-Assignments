@@ -212,12 +212,11 @@ def flash_fwd_kernel(
 @triton.jit 
 def flash_bwd_kernel(
     Q_ptr, K_ptr, V_ptr,
-    O_ptr, L_ptr, D_ptr, dO_ptr,
+    L_ptr, D_ptr, dO_ptr,
     dQ_ptr, dK_ptr, dV_ptr,
     stride_qb, stride_qq, stride_qd, 
     stride_kb, stride_kk, stride_kd, 
     stride_vb, stride_vk, stride_vd, 
-    stride_ob, stride_oq, stride_od, 
     stride_lb, stride_lq,
     stride_db, stride_dq,
     stride_dob, stride_doq, stride_dod, 
@@ -267,17 +266,6 @@ def flash_bwd_kernel(
         order=(1, 0), 
     )
     
-    O_block_ptr = tl.make_block_ptr(
-        # 每次只看一个 batch
-        O_ptr + batch_index * stride_ob, 
-        shape=(N_QUERIES, D), 
-        strides=(stride_oq, stride_od), 
-        # o 和 q 是一样的
-        offsets=(0, 0), 
-        block_shape=(Q_TILE_SIZE, D), 
-        order=(1, 0), 
-    )
-    
     L_block_ptr = tl.make_block_ptr(
         # 每次只看一个 batch
         L_ptr + batch_index * stride_lb, 
@@ -309,16 +297,8 @@ def flash_bwd_kernel(
         block_shape=(Q_TILE_SIZE, D), 
         order=(1, 0), 
     )
-
-    dQ_block_ptr = tl.make_block_ptr(
-        # 每次只看一个 batch
-        dQ_ptr + batch_index * stride_dqb, 
-        shape=(N_QUERIES, D), 
-        strides=(stride_dqq, stride_dqd), 
-        offsets=(0, 0), 
-        block_shape=(Q_TILE_SIZE, D), 
-        order=(1, 0), 
-    )
+    
+    dQ_mimic_ptr = dQ_ptr + batch_index * stride_dqb
     
     dK_block_ptr = tl.make_block_ptr(
         # 每次只看一个 batch
@@ -356,17 +336,20 @@ def flash_bwd_kernel(
         loop_start = key_tile_index * K_TILE_SIZE // Q_TILE_SIZE
         # 用于这回是中途开始，所以需要提前 advance 好指针
         Q_block_ptr = Q_block_ptr.advance((Q_TILE_SIZE * loop_start, 0))
-        O_block_ptr = O_block_ptr.advance((Q_TILE_SIZE * loop_start, 0))
         dO_block_ptr = dO_block_ptr.advance((Q_TILE_SIZE * loop_start, 0))
-        dQ_block_ptr = dQ_block_ptr.advance((Q_TILE_SIZE * loop_start, 0))
         L_block_ptr = L_block_ptr.advance((Q_TILE_SIZE * loop_start,))
         D_block_ptr = D_block_ptr.advance((Q_TILE_SIZE * loop_start,))
 
     for i in range(loop_start, tl.cdiv(N_QUERIES, Q_TILE_SIZE)):
         q_i = tl.load(Q_block_ptr, boundary_check=(0, 1))
-        o_i = tl.load(O_block_ptr, boundary_check=(0, 1))
         do_i = tl.load(dO_block_ptr, boundary_check=(0, 1))
-        dq_i = tl.load(dQ_block_ptr, boundary_check=(0, 1))
+        
+        # 这个是模拟 advance
+        offs_dq_m = i * Q_TILE_SIZE + tl.arange(0, Q_TILE_SIZE)
+        # 这个没有模拟，arange 都不是模拟
+        offs_dq_n = tl.arange(0, D)
+        # 这个模拟 load，从单一指针变成每个元素的指针矩阵
+        dq_mimic_i = dQ_mimic_ptr + (offs_dq_m[:, None] * stride_dqq + offs_dq_n[None, :] * stride_dqd)
 
         l_i = tl.load(L_block_ptr, boundary_check=(0,))
         d_i = tl.load(D_block_ptr, boundary_check=(0,))
@@ -382,20 +365,14 @@ def flash_bwd_kernel(
         dp_ij = tl.dot(do_i, v_j.trans())
         ds_ij = p_ij * (dp_ij - d_i[:,None]) * scale
 
-        # 原子加，要手动计算偏移
-        offs_dq_m = i * Q_TILE_SIZE + tl.arange(0, Q_TILE_SIZE)
-        offs_dq_n = tl.arange(0, D)
-        dq_step = tl.dot(ds_ij, k_j)
-        dq_ptrs = dQ_ptr + batch_index * stride_dqb + (offs_dq_m[:, None] * stride_dqq + offs_dq_n[None, :] * stride_dqd)
-        tl.atomic_add(dq_ptrs, dq_step)
+        # 原子加，模拟 dq_i += tl.dot(ds_ij, k_j)
+        tl.atomic_add(dq_mimic_i, tl.dot(ds_ij, k_j))
 
         dk_j += tl.dot(ds_ij.trans(), q_i)
         
         # 别忘了 advance
         Q_block_ptr = Q_block_ptr.advance((Q_TILE_SIZE, 0))
-        O_block_ptr = O_block_ptr.advance((Q_TILE_SIZE, 0))
         dO_block_ptr = dO_block_ptr.advance((Q_TILE_SIZE, 0))
-        dQ_block_ptr = dQ_block_ptr.advance((Q_TILE_SIZE, 0))
         L_block_ptr = L_block_ptr.advance((Q_TILE_SIZE,))
         D_block_ptr = D_block_ptr.advance((Q_TILE_SIZE,))
     tl.store(dK_block_ptr, dk_j, boundary_check=(0, 1))
@@ -447,12 +424,11 @@ class FlashAttention2Triton(torch.autograd.Function):
         grid = (triton.cdiv(T, BK), B)
         flash_bwd_kernel[grid](
             Q, K, V,
-            O, L, D, dO,
+            L, D, dO,
             dQ, dK, dV,
             Q.stride(0), Q.stride(1), Q.stride(2), 
             K.stride(0), K.stride(1), K.stride(2), 
             V.stride(0), V.stride(1), V.stride(2), 
-            O.stride(0), O.stride(1), O.stride(2), 
             L.stride(0), L.stride(1), 
             D.stride(0), D.stride(1), 
             dO.stride(0), dO.stride(1), dO.stride(2), 
