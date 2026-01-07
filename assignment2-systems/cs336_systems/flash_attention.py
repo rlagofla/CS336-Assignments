@@ -179,13 +179,12 @@ def flash_fwd_kernel(
         k_j = tl.load(K_block_ptr, boundary_check=(0, 1))
         v_j = tl.load(V_block_ptr, boundary_check=(0, 1))
         
-        # 列由 key 决定
-        offs_n = j * K_TILE_SIZE + tl.arange(0, K_TILE_SIZE)
-        
         s_ij = tl.dot(q_i, k_j.trans()) * scale
         
         # 算完部分分，找最大值之前，做 mask
         if is_causal and (j == loop_end - 1):
+            # 列由 key 决定
+            offs_n = j * K_TILE_SIZE + tl.arange(0, K_TILE_SIZE)
             causal_mask = offs_m[:, None] >= offs_n[None, :]
             # 注意 where 和 mask_fill 不一样
             # where 是 True 的地方 s_ij；False 的地方 -inf
@@ -227,7 +226,7 @@ def flash_bwd_kernel(
     stride_dvb, stride_dvk, stride_dvd, 
     N_QUERIES, N_KEYS, 
     scale, 
-    is_casual,
+    is_causal: tl.constexpr,
     D: tl.constexpr, 
     Q_TILE_SIZE: tl.constexpr, 
     K_TILE_SIZE: tl.constexpr, 
@@ -341,14 +340,29 @@ def flash_bwd_kernel(
         block_shape=(K_TILE_SIZE, D), 
         order=(1, 0), 
     )
+    # 列由 key 确定，类似 fwd 的风格
+    offs_n = key_tile_index * K_TILE_SIZE + tl.arange(0, K_TILE_SIZE)
 
     k_j = tl.load(K_block_ptr, boundary_check=(0, 1))
     v_j = tl.load(V_block_ptr, boundary_check=(0, 1))
 
     dk_j = tl.zeros((K_TILE_SIZE, D), dtype=tl.float32)
     dv_j = tl.zeros((K_TILE_SIZE, D), dtype=tl.float32)
+    
+    loop_start = 0
+    if is_causal:
+        # 从对角线循环
+        # 直接赋值，等效 maximum
+        loop_start = key_tile_index * K_TILE_SIZE // Q_TILE_SIZE
+        # 用于这回是中途开始，所以需要提前 advance 好指针
+        Q_block_ptr = Q_block_ptr.advance((Q_TILE_SIZE * loop_start, 0))
+        O_block_ptr = O_block_ptr.advance((Q_TILE_SIZE * loop_start, 0))
+        dO_block_ptr = dO_block_ptr.advance((Q_TILE_SIZE * loop_start, 0))
+        dQ_block_ptr = dQ_block_ptr.advance((Q_TILE_SIZE * loop_start, 0))
+        L_block_ptr = L_block_ptr.advance((Q_TILE_SIZE * loop_start,))
+        D_block_ptr = D_block_ptr.advance((Q_TILE_SIZE * loop_start,))
 
-    for i in range(tl.cdiv(N_QUERIES, Q_TILE_SIZE)):
+    for i in range(loop_start, tl.cdiv(N_QUERIES, Q_TILE_SIZE)):
         q_i = tl.load(Q_block_ptr, boundary_check=(0, 1))
         o_i = tl.load(O_block_ptr, boundary_check=(0, 1))
         do_i = tl.load(dO_block_ptr, boundary_check=(0, 1))
@@ -358,6 +372,10 @@ def flash_bwd_kernel(
         d_i = tl.load(D_block_ptr, boundary_check=(0,))
 
         s_ij = tl.dot(q_i, k_j.trans()) * scale
+        if is_causal and (i == loop_start):
+            offs_m = i * Q_TILE_SIZE + tl.arange(0, Q_TILE_SIZE)
+            mask = offs_m[:, None] >= offs_n[None, :]
+            s_ij = tl.where(mask, s_ij, float('-inf'))
         p_ij = tl.exp(s_ij - l_i[:,None])
 
         dv_j += tl.dot(p_ij.trans(), do_i)
@@ -365,10 +383,10 @@ def flash_bwd_kernel(
         ds_ij = p_ij * (dp_ij - d_i[:,None]) * scale
 
         # 原子加，要手动计算偏移
-        offs_m = i * Q_TILE_SIZE + tl.arange(0, Q_TILE_SIZE)
-        offs_n = tl.arange(0, D)
+        offs_dq_m = i * Q_TILE_SIZE + tl.arange(0, Q_TILE_SIZE)
+        offs_dq_n = tl.arange(0, D)
         dq_step = tl.dot(ds_ij, k_j)
-        dq_ptrs = dQ_ptr + batch_index * stride_dqb + (offs_m[:, None] * stride_dqq + offs_n[None, :] * stride_dqd)
+        dq_ptrs = dQ_ptr + batch_index * stride_dqb + (offs_dq_m[:, None] * stride_dqq + offs_dq_n[None, :] * stride_dqd)
         tl.atomic_add(dq_ptrs, dq_step)
 
         dk_j += tl.dot(ds_ij.trans(), q_i)
@@ -415,8 +433,9 @@ class FlashAttention2Triton(torch.autograd.Function):
     def backward(ctx, dO):
         # 虽然这里都是 dX，但是不是微分，而默认是 dL/dX
         Q, K, V, O, L = ctx.saved_tensors
+        is_causal = ctx.is_causal
         B, T, C = Q.shape
-        D = torch.sum(O * dO, dim=-1, keepdim=True)
+        D = torch.sum(O * dO, dim=-1)
         
         dQ = torch.zeros_like(Q)
         dK = torch.zeros_like(K)
@@ -442,7 +461,7 @@ class FlashAttention2Triton(torch.autograd.Function):
             dV.stride(0), dV.stride(1), dV.stride(2), 
             T, T,
             C ** -0.5,
-            False,
+            is_causal,
             D=C, Q_TILE_SIZE=BQ, K_TILE_SIZE=BK
         )
 
