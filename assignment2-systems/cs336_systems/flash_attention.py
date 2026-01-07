@@ -175,17 +175,17 @@ def flash_fwd_kernel(
         loop_end = tl.minimum(loop_end, tmp)
     
     q_i = tl.load(Q_block_ptr, boundary_check=(0, 1))
-    for i in range(loop_end):
+    for j in range(loop_end):
         k_j = tl.load(K_block_ptr, boundary_check=(0, 1))
         v_j = tl.load(V_block_ptr, boundary_check=(0, 1))
         
         # 列由 key 决定
-        offs_n = i * K_TILE_SIZE + tl.arange(0, K_TILE_SIZE)
+        offs_n = j * K_TILE_SIZE + tl.arange(0, K_TILE_SIZE)
         
         s_ij = tl.dot(q_i, k_j.trans()) * scale
         
         # 算完部分分，找最大值之前，做 mask
-        if is_causal and (i == loop_end - 1):
+        if is_causal and (j == loop_end - 1):
             causal_mask = offs_m[:, None] >= offs_n[None, :]
             # 注意 where 和 mask_fill 不一样
             # where 是 True 的地方 s_ij；False 的地方 -inf
@@ -210,6 +210,178 @@ def flash_fwd_kernel(
     tl.store(L_block_ptr, m_i + tl.log(l_i), boundary_check=(0,))
     
     
+@triton.jit 
+def flash_bwd_kernel(
+    Q_ptr, K_ptr, V_ptr,
+    O_ptr, L_ptr, D_ptr, dO_ptr,
+    dQ_ptr, dK_ptr, dV_ptr,
+    stride_qb, stride_qq, stride_qd, 
+    stride_kb, stride_kk, stride_kd, 
+    stride_vb, stride_vk, stride_vd, 
+    stride_ob, stride_oq, stride_od, 
+    stride_lb, stride_lq,
+    stride_db, stride_dq,
+    stride_dob, stride_doq, stride_dod, 
+    stride_dqb, stride_dqq, stride_dqd, 
+    stride_dkb, stride_dkk, stride_dkd, 
+    stride_dvb, stride_dvk, stride_dvd, 
+    N_QUERIES, N_KEYS, 
+    scale, 
+    is_casual,
+    D: tl.constexpr, 
+    Q_TILE_SIZE: tl.constexpr, 
+    K_TILE_SIZE: tl.constexpr, 
+): 
+    # key 方面并行了
+    key_tile_index = tl.program_id(0)
+    batch_index = tl.program_id(1) 
+    # Offset each pointer with the corresponding batch index 
+    # multiplied with the batch stride for each tensor 
+    Q_block_ptr = tl.make_block_ptr(
+        # 每次只看一个 batch
+        Q_ptr + batch_index * stride_qb, 
+        shape=(N_QUERIES, D), 
+        strides=(stride_qq, stride_qd), 
+        offsets=(0, 0), 
+        block_shape=(Q_TILE_SIZE, D), 
+        order=(1, 0), 
+    )
+    
+    K_block_ptr = tl.make_block_ptr(
+        # 每次只看一个 batch
+        K_ptr + batch_index * stride_kb, 
+        shape=(N_KEYS, D), 
+        strides=(stride_kk, stride_kd), 
+        offsets=(key_tile_index * K_TILE_SIZE, 0), 
+        block_shape=(K_TILE_SIZE, D), 
+        order=(1, 0), 
+    )
+    
+    V_block_ptr = tl.make_block_ptr(
+        # 每次只看一个 batch
+        V_ptr + batch_index * stride_vb, 
+        shape=(N_KEYS, D), 
+        strides=(stride_vk, stride_vd), 
+        # value 和 key 是一样的
+        offsets=(key_tile_index * K_TILE_SIZE, 0), 
+        block_shape=(K_TILE_SIZE, D), 
+        order=(1, 0), 
+    )
+    
+    O_block_ptr = tl.make_block_ptr(
+        # 每次只看一个 batch
+        O_ptr + batch_index * stride_ob, 
+        shape=(N_QUERIES, D), 
+        strides=(stride_oq, stride_od), 
+        # o 和 q 是一样的
+        offsets=(0, 0), 
+        block_shape=(Q_TILE_SIZE, D), 
+        order=(1, 0), 
+    )
+    
+    L_block_ptr = tl.make_block_ptr(
+        # 每次只看一个 batch
+        L_ptr + batch_index * stride_lb, 
+        shape=(N_QUERIES,), 
+        strides=(stride_lq,), 
+        # 比 q 少一维 D
+        offsets=(0,), 
+        block_shape=(Q_TILE_SIZE,), 
+        order=(0,), 
+    )
+    
+    D_block_ptr = tl.make_block_ptr(
+        # 每次只看一个 batch
+        D_ptr + batch_index * stride_db, 
+        shape=(N_QUERIES,), 
+        strides=(stride_dq,), 
+        # 比 q 少一维 D
+        offsets=(0,), 
+        block_shape=(Q_TILE_SIZE,), 
+        order=(0,), 
+    )
+
+    dO_block_ptr = tl.make_block_ptr(
+        # 每次只看一个 batch
+        dO_ptr + batch_index * stride_dob, 
+        shape=(N_QUERIES, D), 
+        strides=(stride_doq, stride_dod), 
+        offsets=(0, 0), 
+        block_shape=(Q_TILE_SIZE, D), 
+        order=(1, 0), 
+    )
+
+    dQ_block_ptr = tl.make_block_ptr(
+        # 每次只看一个 batch
+        dQ_ptr + batch_index * stride_dqb, 
+        shape=(N_QUERIES, D), 
+        strides=(stride_dqq, stride_dqd), 
+        offsets=(0, 0), 
+        block_shape=(Q_TILE_SIZE, D), 
+        order=(1, 0), 
+    )
+    
+    dK_block_ptr = tl.make_block_ptr(
+        # 每次只看一个 batch
+        dK_ptr + batch_index * stride_dkb, 
+        shape=(N_KEYS, D), 
+        strides=(stride_dkk, stride_dkd), 
+        offsets=(key_tile_index * K_TILE_SIZE, 0), 
+        block_shape=(K_TILE_SIZE, D), 
+        order=(1, 0), 
+    )
+    
+    dV_block_ptr = tl.make_block_ptr(
+        # 每次只看一个 batch
+        dV_ptr + batch_index * stride_dvb, 
+        shape=(N_KEYS, D), 
+        strides=(stride_dvk, stride_dvd), 
+        # value 和 key 是一样的
+        offsets=(key_tile_index * K_TILE_SIZE, 0), 
+        block_shape=(K_TILE_SIZE, D), 
+        order=(1, 0), 
+    )
+
+    k_j = tl.load(K_block_ptr, boundary_check=(0, 1))
+    v_j = tl.load(V_block_ptr, boundary_check=(0, 1))
+
+    dk_j = tl.zeros((K_TILE_SIZE, D), dtype=tl.float32)
+    dv_j = tl.zeros((K_TILE_SIZE, D), dtype=tl.float32)
+
+    for i in range(tl.cdiv(N_QUERIES, Q_TILE_SIZE)):
+        q_i = tl.load(Q_block_ptr, boundary_check=(0, 1))
+        o_i = tl.load(O_block_ptr, boundary_check=(0, 1))
+        do_i = tl.load(dO_block_ptr, boundary_check=(0, 1))
+        dq_i = tl.load(dQ_block_ptr, boundary_check=(0, 1))
+
+        l_i = tl.load(L_block_ptr, boundary_check=(0,))
+        d_i = tl.load(D_block_ptr, boundary_check=(0,))
+
+        s_ij = tl.dot(q_i, k_j.trans()) * scale
+        p_ij = tl.exp(s_ij - l_i[:,None])
+
+        dv_j += tl.dot(p_ij.trans(), do_i)
+        dp_ij = tl.dot(do_i, v_j.trans())
+        ds_ij = p_ij * (dp_ij - d_i[:,None]) * scale
+
+        # 原子加，要手动计算偏移
+        offs_m = i * Q_TILE_SIZE + tl.arange(0, Q_TILE_SIZE)
+        offs_n = tl.arange(0, D)
+        dq_step = tl.dot(ds_ij, k_j)
+        dq_ptrs = dQ_ptr + batch_index * stride_dqb + (offs_m[:, None] * stride_dqq + offs_n[None, :] * stride_dqd)
+        tl.atomic_add(dq_ptrs, dq_step)
+
+        dk_j += tl.dot(ds_ij.trans(), q_i)
+        
+        # 别忘了 advance
+        Q_block_ptr = Q_block_ptr.advance((Q_TILE_SIZE, 0))
+        O_block_ptr = O_block_ptr.advance((Q_TILE_SIZE, 0))
+        dO_block_ptr = dO_block_ptr.advance((Q_TILE_SIZE, 0))
+        dQ_block_ptr = dQ_block_ptr.advance((Q_TILE_SIZE, 0))
+        L_block_ptr = L_block_ptr.advance((Q_TILE_SIZE,))
+        D_block_ptr = D_block_ptr.advance((Q_TILE_SIZE,))
+    tl.store(dK_block_ptr, dk_j, boundary_check=(0, 1))
+    tl.store(dV_block_ptr, dv_j, boundary_check=(0, 1))
 
 
 class FlashAttention2Triton(torch.autograd.Function):
@@ -222,7 +394,6 @@ class FlashAttention2Triton(torch.autograd.Function):
         BQ = 16
         BK = 16
         grid = (triton.cdiv(T, BQ), B)
-        print(grid)
         flash_fwd_kernel[grid](
             Q, K, V,
             O, L,
@@ -241,8 +412,41 @@ class FlashAttention2Triton(torch.autograd.Function):
         return O
 
     @staticmethod
-    def backward(ctx, grad_output):
-        raise NotImplementedError
+    def backward(ctx, dO):
+        # 虽然这里都是 dX，但是不是微分，而默认是 dL/dX
+        Q, K, V, O, L = ctx.saved_tensors
+        B, T, C = Q.shape
+        D = torch.sum(O * dO, dim=-1, keepdim=True)
+        
+        dQ = torch.zeros_like(Q)
+        dK = torch.zeros_like(K)
+        dV = torch.zeros_like(V)
+        
+        BQ = 16
+        BK = 16
+        # key 方面并行，所以 grid 要改
+        grid = (triton.cdiv(T, BK), B)
+        flash_bwd_kernel[grid](
+            Q, K, V,
+            O, L, D, dO,
+            dQ, dK, dV,
+            Q.stride(0), Q.stride(1), Q.stride(2), 
+            K.stride(0), K.stride(1), K.stride(2), 
+            V.stride(0), V.stride(1), V.stride(2), 
+            O.stride(0), O.stride(1), O.stride(2), 
+            L.stride(0), L.stride(1), 
+            D.stride(0), D.stride(1), 
+            dO.stride(0), dO.stride(1), dO.stride(2), 
+            dQ.stride(0), dQ.stride(1), dQ.stride(2), 
+            dK.stride(0), dK.stride(1), dK.stride(2), 
+            dV.stride(0), dV.stride(1), dV.stride(2), 
+            T, T,
+            C ** -0.5,
+            False,
+            D=C, Q_TILE_SIZE=BQ, K_TILE_SIZE=BK
+        )
+
+        return dQ, dK, dV, None
 
 if __name__ == '__main__':
     Q = torch.rand((1, 16, 16), device='cuda')
